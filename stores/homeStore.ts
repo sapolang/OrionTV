@@ -1,8 +1,12 @@
 import { create } from "zustand";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api, SearchResult, PlayRecord } from "@/services/api";
 import { PlayRecordManager } from "@/services/storage";
 import useAuthStore from "./authStore";
 import { useSettingsStore } from "./settingsStore";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag("HomeStore");
 
 export type RowItem = (SearchResult | PlayRecord) & {
   id: string;
@@ -66,6 +70,44 @@ interface CacheItem {
 const CACHE_EXPIRE_TIME = 5 * 60 * 1000; // 5分钟过期
 const MAX_CACHE_SIZE = 10; // 最大缓存容量
 const MAX_ITEMS_PER_CACHE = 40; // 每个缓存最大条目数
+
+// 播放历史持久化缓存配置
+const PLAY_RECORD_CACHE_KEY = "home_play_record_cache";
+const PLAY_RECORD_CACHE_EXPIRE = 24 * 60 * 60 * 1000; // 24小时过期
+
+// 保存播放历史到持久化缓存
+const savePlayRecordCache = async (data: RowItem[]) => {
+  try {
+    await AsyncStorage.setItem(
+      PLAY_RECORD_CACHE_KEY,
+      JSON.stringify({
+        data,
+        timestamp: Date.now(),
+      })
+    );
+    logger.info("Play record cache saved successfully");
+  } catch (error) {
+    logger.info("Failed to save play record cache:", error);
+  }
+};
+
+// 从持久化缓存获取播放历史
+const getPlayRecordCache = async (): Promise<RowItem[] | null> => {
+  try {
+    const cached = await AsyncStorage.getItem(PLAY_RECORD_CACHE_KEY);
+    if (cached) {
+      const { data, timestamp } = JSON.parse(cached);
+      if (Date.now() - timestamp < PLAY_RECORD_CACHE_EXPIRE) {
+        logger.info("Play record cache loaded successfully");
+        return data;
+      }
+    }
+    return null;
+  } catch (error) {
+    logger.info("Failed to load play record cache:", error);
+    return null;
+  }
+};
 
 const getCacheKey = (category: Category) => {
   return `${category.type || 'unknown'}-${category.title}-${category.tag || ''}`;
@@ -150,27 +192,41 @@ const useHomeStore = create<HomeState>((set, get) => ({
           set({ contentData: [], hasMore: false });
           return;
         }
-        const records = await PlayRecordManager.getAll();
-        const rowItems = Object.entries(records)
-          .map(([key, record]) => {
-            const [source, id] = key.split("+");
-            return {
-              ...record,
-              id,
-              source,
-              progress: record.play_time / record.total_time,
-              poster: record.cover,
-              sourceName: record.source_name,
-              episodeIndex: record.index,
-              totalEpisodes: record.total_episodes,
-              lastPlayed: record.save_time,
-              play_time: record.play_time,
-            };
-          })
-          // .filter((record) => record.progress !== undefined && record.progress > 0 && record.progress < 1)
-          .sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
+        try {
+          const records = await PlayRecordManager.getAll();
+          const rowItems = Object.entries(records)
+            .map(([key, record]) => {
+              const [source, id] = key.split("+");
+              return {
+                ...record,
+                id,
+                source,
+                progress: record.play_time / record.total_time,
+                poster: record.cover,
+                sourceName: record.source_name,
+                episodeIndex: record.index,
+                totalEpisodes: record.total_episodes,
+                lastPlayed: record.save_time,
+                play_time: record.play_time,
+              };
+            })
+            // .filter((record) => record.progress !== undefined && record.progress > 0 && record.progress < 1)
+            .sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
 
-        set({ contentData: rowItems, hasMore: false });
+          // 保存到持久化缓存
+          await savePlayRecordCache(rowItems);
+          set({ contentData: rowItems, hasMore: false });
+        } catch (recordErr) {
+          // 播放历史加载失败时，尝试从持久化缓存读取
+          logger.info("Failed to load play records, trying cache:", recordErr);
+          const cachedRecords = await getPlayRecordCache();
+          if (cachedRecords && cachedRecords.length > 0) {
+            logger.info("Using cached play records for offline display");
+            set({ contentData: cachedRecords, hasMore: false, error: null });
+          } else {
+            throw recordErr;
+          }
+        }
       } else if (selectedCategory.type && selectedCategory.tag) {
         const result = await api.getDoubanData(
           selectedCategory.type,
