@@ -114,29 +114,74 @@ export class FavoriteManager {
         return {};
       }
     }
-    return (await api.getFavorites()) as Record<string, Favorite>;
+    
+    try {
+      const apiData = await api.getFavorites() as Record<string, Favorite>;
+      // 将服务器数据缓存到本地
+      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(apiData));
+      return apiData;
+    } catch (error) {
+      logger.info("Failed to get favorites from API, falling back to local cache:", error);
+      // API失败时，尝试从本地缓存读取
+      try {
+        const data = await AsyncStorage.getItem(STORAGE_KEYS.FAVORITES);
+        return data ? JSON.parse(data) : {};
+      } catch (cacheError) {
+        logger.info("Failed to get favorites from local cache:", cacheError);
+        return {};
+      }
+    }
   }
 
   static async save(source: string, id: string, item: Favorite): Promise<void> {
     const key = generateKey(source, id);
+    const favoriteItem = { ...item, save_time: Date.now() };
+    
     if (this.getStorageType() === "localstorage") {
       const allFavorites = await this.getAll();
-      allFavorites[key] = { ...item, save_time: Date.now() };
+      allFavorites[key] = favoriteItem;
       await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
       return;
     }
-    await api.addFavorite(key, item);
+    
+    try {
+      await api.addFavorite(key, item);
+      // 保存到服务器成功后，更新本地缓存
+      const allFavorites = await this.getAll();
+      allFavorites[key] = favoriteItem;
+      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
+    } catch (error) {
+      logger.info("Failed to save favorite to API, falling back to local storage:", error);
+      // API失败时，仅保存到本地
+      const allFavorites = await this.getAll();
+      allFavorites[key] = favoriteItem;
+      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
+    }
   }
 
   static async remove(source: string, id: string): Promise<void> {
     const key = generateKey(source, id);
+    
     if (this.getStorageType() === "localstorage") {
       const allFavorites = await this.getAll();
       delete allFavorites[key];
       await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
       return;
     }
-    await api.deleteFavorite(key);
+    
+    try {
+      await api.deleteFavorite(key);
+      // 删除服务器成功后，更新本地缓存
+      const allFavorites = await this.getAll();
+      delete allFavorites[key];
+      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
+    } catch (error) {
+      logger.info("Failed to remove favorite from API, falling back to local storage:", error);
+      // API失败时，仅删除本地
+      const allFavorites = await this.getAll();
+      delete allFavorites[key];
+      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
+    }
   }
 
   static async isFavorited(source: string, id: string): Promise<boolean> {
@@ -165,7 +210,16 @@ export class FavoriteManager {
       await AsyncStorage.removeItem(STORAGE_KEYS.FAVORITES);
       return;
     }
-    await api.deleteFavorite();
+    
+    try {
+      await api.deleteFavorite();
+      // 清空服务器成功后，清空本地缓存
+      await AsyncStorage.removeItem(STORAGE_KEYS.FAVORITES);
+    } catch (error) {
+      logger.info("Failed to clear favorites from API, falling back to local storage:", error);
+      // API失败时，仅清空本地
+      await AsyncStorage.removeItem(STORAGE_KEYS.FAVORITES);
+    }
   }
 }
 
