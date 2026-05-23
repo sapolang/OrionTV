@@ -98,6 +98,12 @@ export default function HomeScreen() {
       return;
     }
 
+    // 最近播放类型始终尝试加载（不依赖 API 配置，支持离线缓存）
+    if (selectedCategory.type === "record") {
+      fetchInitialData();
+      return;
+    }
+
     // 只有在API配置完成且分类有效时才获取数据
     if (apiConfigStatus.isConfigured && !apiConfigStatus.needsConfiguration) {
       // 对于有标签的分类，需要确保有标签才获取数据
