@@ -2,8 +2,7 @@ import React, { useEffect } from "react";
 import { View, StyleSheet } from "react-native";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
-import useFavoritesStore from "@/stores/favoritesStore";
-import { Favorite } from "@/services/storage";
+import useFavoritesStore, { FavoriteWithSource } from "@/stores/favoritesStore";
 import VideoCard from "@/components/VideoCard";
 import { api } from "@/services/api";
 import CustomScrollView from "@/components/CustomScrollView";
@@ -24,7 +23,7 @@ export default function FavoritesScreen() {
     fetchFavorites();
   }, [fetchFavorites]);
 
-  const renderItem = ({ item }: { item: Favorite & { key: string }; index: number }) => {
+  const renderItem = ({ item }: { item: FavoriteWithSource }) => {
     const [source, id] = item.key.split("+");
     return (
       <VideoCard
