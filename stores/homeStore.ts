@@ -114,8 +114,9 @@ const useHomeStore = create<HomeState>((set, get) => ({
     console.log('[HomeStore] checkLoginStatus done');
 
     const { selectedCategory } = get();
+    const { isLoggedIn } = useAuthStore.getState();
     const cacheKey = getCacheKey(selectedCategory);
-    console.log('[HomeStore] selectedCategory:', selectedCategory);
+    console.log('[HomeStore] selectedCategory:', selectedCategory, 'isLoggedIn:', isLoggedIn);
 
     // 最近播放不缓存，始终实时获取
     if (selectedCategory.type === 'record') {
@@ -124,7 +125,16 @@ const useHomeStore = create<HomeState>((set, get) => ({
       return;
     }
 
-    // 先尝试从 SQLite 加载缓存（作为初步显示）- SQLite缓存永久有效
+    // 登录成功时，优先走网络请求获取最新数据
+    if (isLoggedIn) {
+      console.log('[HomeStore] User is logged in, fetching fresh data from network');
+      set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
+      await get().loadMoreData();
+      return;
+    }
+
+    // 未登录（登录失败）时，才使用 SQLite 缓存作为离线数据
+    console.log('[HomeStore] User not logged in, checking SQLite cache');
     console.log('[HomeStore] Checking SQLite cache for:', cacheKey);
     const cachedDbData = await HomeCacheDb.get(cacheKey);
     console.log('[HomeStore] SQLite cache result:', cachedDbData ? `found ${cachedDbData.data.length} items` : 'not found');
@@ -142,25 +152,12 @@ const useHomeStore = create<HomeState>((set, get) => ({
         hasMore: cachedDbData.hasMore,
         error: null
       });
-      return; // 不再调用 loadMoreData，有缓存就足够了
+      return; // 不再调用 loadMoreData
     }
 
-    // 检查内存缓存
-    const memoryCachedData = dataCache.get(cacheKey);
-    if (memoryCachedData && isValidMemoryCache(memoryCachedData)) {
-      console.log('[HomeStore] Using memory cache');
-      set({
-        loading: false,
-        contentData: memoryCachedData.data,
-        pageStart: memoryCachedData.data.length,
-        hasMore: memoryCachedData.hasMore,
-        error: null
-      });
-      return;
-    }
-
-    // 没有缓存时才显示加载状态并调用网络请求
-    set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
+    // 没有缓存也没有登录，显示空状态
+    console.log('[HomeStore] No cache and not logged in, showing empty state');
+    set({ loading: false, contentData: [], pageStart: 0, hasMore: false, error: null });
   },
 
   loadMoreData: async () => {
