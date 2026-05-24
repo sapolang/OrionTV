@@ -32,6 +32,8 @@ export interface PlayerSettings {
 
 export interface AppSettings {
   apiBaseUrl: string;
+  m3uUrl: string;
+  password: string;
   remoteInputEnabled: boolean;
   videoSource: {
     enabledAll: boolean;
@@ -39,7 +41,6 @@ export interface AppSettings {
       [key: string]: boolean;
     };
   };
-  m3uUrl: string;
 }
 
 export interface LoginCredentials {
@@ -312,6 +313,7 @@ export class SettingsManager {
         sources: {},
       },
       m3uUrl: "",
+      password: "",
     };
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);
