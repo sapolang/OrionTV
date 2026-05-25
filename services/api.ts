@@ -93,16 +93,26 @@ export class API {
       throw new Error("API_URL_NOT_SET");
     }
 
-    const response = await fetch(`${this.baseURL}${url}`, options);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('Connection timeout'));
+      }, 5000); // 5秒超时
+      return () => clearTimeout(timer);
+    });
 
-    if (response.status === 401) {
-      throw new Error("UNAUTHORIZED");
-    }
+    const fetchPromise = fetch(`${this.baseURL}${url}`, options).then((response) => {
+      if (response.status === 401) {
+        throw new Error("UNAUTHORIZED");
+      }
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
+      return response;
+    });
+
+    const response = await Promise.race([fetchPromise, timeoutPromise]);
     return response;
   }
 
