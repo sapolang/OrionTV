@@ -19,15 +19,18 @@ interface APIConfigSectionProps {
 
 export interface APIConfigSectionRef {
   setInputValue: (value: string) => void;
+  setPasswordValue: (value: string) => void;
 }
 
 export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSectionProps>(
   ({ onChanged, onFocus, onBlur, onPress, hideDescription = false }, ref) => {
-    const { apiBaseUrl, setApiBaseUrl, remoteInputEnabled } = useSettingsStore();
+    const { apiBaseUrl, setApiBaseUrl, password, setPassword, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
     const [isInputFocused, setIsInputFocused] = useState(false);
+    const [isPasswordFocused, setIsPasswordFocused] = useState(false);
     const [isSectionFocused, setIsSectionFocused] = useState(false);
     const inputRef = useRef<TextInput>(null);
+    const passwordRef = useRef<TextInput>(null);
     const inputAnimationStyle = useButtonAnimation(isSectionFocused, 1.01);
     const deviceType = useResponsiveLayout().deviceType;
 
@@ -36,9 +39,18 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
       onChanged();
     };
 
+    const handlePasswordChange = (pwd: string) => {
+      setPassword(pwd);
+      onChanged();
+    };
+
     useImperativeHandle(ref, () => ({
       setInputValue: (value: string) => {
         setApiBaseUrl(value);
+        onChanged();
+      },
+      setPasswordValue: (value: string) => {
+        setPassword(value);
         onChanged();
       },
     }));
@@ -120,6 +132,20 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
               onBlur={() => setIsInputFocused(false)}
             />
           </Animated.View>
+          <View style={styles.passwordContainer}>
+            <ThemedText style={styles.passwordLabel}>密码</ThemedText>
+            <TextInput
+              ref={passwordRef}
+              style={[styles.input, isPasswordFocused && styles.inputFocused]}
+              value={password}
+              onChangeText={handlePasswordChange}
+              placeholder="输入密码（可选）"
+              placeholderTextColor="#888"
+              secureTextEntry
+              onFocus={() => setIsPasswordFocused(true)}
+              onBlur={() => setIsPasswordFocused(false)}
+            />
+          </View>
         </View>
       </SettingsSection>
     );
@@ -146,6 +172,14 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     marginBottom: 12,
+  },
+  passwordContainer: {
+    marginTop: 8,
+  },
+  passwordLabel: {
+    fontSize: 14,
+    marginBottom: 8,
+    color: "#aaa",
   },
   label: {
     fontSize: 16,

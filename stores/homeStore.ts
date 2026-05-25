@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api, SearchResult, PlayRecord } from "@/services/api";
 import { PlayRecordManager } from "@/services/storage";
+import { HomeCacheDb } from "@/services/homeCacheDb";
 import useAuthStore from "./authStore";
 import { useSettingsStore } from "./settingsStore";
 
@@ -9,6 +10,7 @@ export type RowItem = (SearchResult | PlayRecord) & {
   source: string;
   title: string;
   poster: string;
+  originalPoster?: string; // 原始图片URL，断网时使用
   progress?: number;
   play_time?: number;
   lastPlayed?: number;
@@ -71,7 +73,8 @@ const getCacheKey = (category: Category) => {
   return `${category.type || 'unknown'}-${category.title}-${category.tag || ''}`;
 };
 
-const isValidCache = (cacheItem: CacheItem) => {
+// 内存缓存仍然有过期限制
+const isValidMemoryCache = (cacheItem: CacheItem) => {
   return Date.now() - cacheItem.timestamp < CACHE_EXPIRE_TIME;
 };
 
@@ -106,10 +109,14 @@ const useHomeStore = create<HomeState>((set, get) => ({
 
   fetchInitialData: async () => {
     const { apiBaseUrl } = useSettingsStore.getState();
+    console.log('[HomeStore] fetchInitialData start, apiBaseUrl:', apiBaseUrl);
     await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
+    console.log('[HomeStore] checkLoginStatus done');
 
     const { selectedCategory } = get();
+    const { isLoggedIn } = useAuthStore.getState();
     const cacheKey = getCacheKey(selectedCategory);
+    console.log('[HomeStore] selectedCategory:', selectedCategory, 'isLoggedIn:', isLoggedIn);
 
     // 最近播放不缓存，始终实时获取
     if (selectedCategory.type === 'record') {
@@ -118,21 +125,39 @@ const useHomeStore = create<HomeState>((set, get) => ({
       return;
     }
 
-    // 检查缓存
-    if (dataCache.has(cacheKey) && isValidCache(dataCache.get(cacheKey)!)) {
-      const cachedData = dataCache.get(cacheKey)!;
-      set({
-        loading: false,
-        contentData: cachedData.data,
-        pageStart: cachedData.data.length,
-        hasMore: cachedData.hasMore,
-        error: null
-      });
+    // 登录成功时，优先走网络请求获取最新数据
+    if (isLoggedIn) {
+      console.log('[HomeStore] User is logged in, fetching fresh data from network');
+      set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
+      await get().loadMoreData();
       return;
     }
 
-    set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
-    await get().loadMoreData();
+    // 未登录（登录失败）时，才使用 SQLite 缓存作为离线数据
+    console.log('[HomeStore] User not logged in, checking SQLite cache');
+    console.log('[HomeStore] Checking SQLite cache for:', cacheKey);
+    const cachedDbData = await HomeCacheDb.get(cacheKey);
+    console.log('[HomeStore] SQLite cache result:', cachedDbData ? `found ${cachedDbData.data.length} items` : 'not found');
+    if (cachedDbData && cachedDbData.data.length > 0) {
+      // 有缓存时直接显示缓存，不调用网络请求
+      // 断网时使用原始图片URL
+      const cachedItems = cachedDbData.data.map((item) => ({
+        ...item,
+        poster: item.originalPoster || item.poster,
+      }));
+      set({
+        loading: false, // 直接显示缓存，不需要还在加载
+        contentData: cachedItems,
+        pageStart: cachedItems.length,
+        hasMore: cachedDbData.hasMore,
+        error: null
+      });
+      return; // 不再调用 loadMoreData
+    }
+
+    // 没有缓存也没有登录，显示空状态
+    console.log('[HomeStore] No cache and not logged in, showing empty state');
+    set({ loading: false, contentData: [], pageStart: 0, hasMore: false, error: null });
   },
 
   loadMoreData: async () => {
@@ -183,6 +208,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
           ...item,
           id: item.title,
           source: "douban",
+          originalPoster: item.poster, // 保存原始图片URL
         })) as RowItem[];
 
         const cacheKey = getCacheKey(selectedCategory);
@@ -190,7 +216,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
         if (pageStart === 0) {
           // 清理过期缓存
           for (const [key, value] of dataCache.entries()) {
-            if (!isValidCache(value)) {
+            if (!isValidMemoryCache(value)) {
               dataCache.delete(key);
             }
           }
@@ -212,6 +238,14 @@ const useHomeStore = create<HomeState>((set, get) => ({
             hasMore: true // 始终为 true，因为我们允许继续加载
           });
 
+          // 保存到 SQLite 缓存
+          HomeCacheDb.save(cacheKey, {
+            data: cacheItems,
+            timestamp: Date.now(),
+            type: selectedCategory.type,
+            hasMore: true
+          });
+
           set({
             contentData: newItems, // 使用完整的新数据
             pageStart: newItems.length,
@@ -231,6 +265,14 @@ const useHomeStore = create<HomeState>((set, get) => ({
                 data: limitedCacheData,
                 hasMore: true // 始终为 true，因为我们允许继续加载
               });
+
+              // 更新 SQLite 缓存
+              HomeCacheDb.save(cacheKey, {
+                data: limitedCacheData,
+                timestamp: Date.now(),
+                type: selectedCategory.type,
+                hasMore: true
+              });
             }
           }
 
@@ -248,23 +290,59 @@ const useHomeStore = create<HomeState>((set, get) => ({
         set({ hasMore: false });
       }
     } catch (err: any) {
+      console.log('[HomeStore] loadMoreData error:', err);
       let errorMessage = "加载失败，请重试";
+      const cacheKey = getCacheKey(selectedCategory);
 
-      if (err.message === "API_URL_NOT_SET") {
+      // 检查是否是网络错误
+      const isNetworkError = 
+        err.message?.includes("Network") ||
+        err.message?.includes("network") ||
+        err.message?.includes("timeout") ||
+        err.message?.includes("fetch") ||
+        err.message?.includes("Failed to fetch") ||
+        err.message?.includes("Network request failed") ||
+        err.message === "API_URL_NOT_SET" ||
+        (err.name === "TypeError" && err.message?.includes("fetch"));
+
+      console.log('[HomeStore] isNetworkError:', isNetworkError, 'error message:', err.message);
+
+      if (isNetworkError) {
+        // 尝试从 SQLite 缓存加载数据
+        console.log('[HomeStore] Network error, checking SQLite cache for:', cacheKey);
+        const cachedData = await HomeCacheDb.get(cacheKey);
+        console.log('[HomeStore] SQLite cache for network error:', cachedData ? `found ${cachedData.data.length} items` : 'not found');
+        if (cachedData && cachedData.data.length > 0) {
+          // 断网时使用原始图片URL
+          const cachedItems = cachedData.data.map((item) => ({
+            ...item,
+            poster: item.originalPoster || item.poster,
+          }));
+          set({
+            contentData: cachedItems,
+            pageStart: cachedItems.length,
+            hasMore: cachedData.hasMore,
+            error: null,
+            loading: false,
+            loadingMore: false,
+          });
+          return;
+        }
+        // 网络错误但没有缓存，使用通用离线消息
+        errorMessage = "网络连接失败，请检查网络或服务器地址";
+      } else if (err.message === "API_URL_NOT_SET") {
         errorMessage = "请点击右上角设置按钮，配置您的服务器地址";
       } else if (err.message === "UNAUTHORIZED") {
         errorMessage = "认证失败，请重新登录";
         useAuthStore.setState({ isLoggedIn: false, isLoginModalVisible: true });
-      } else if (err.message.includes("Network")) {
-        errorMessage = "网络连接失败，请检查网络连接";
-      } else if (err.message.includes("timeout")) {
-        errorMessage = "请求超时，请检查网络或服务器状态";
       } else if (err.message.includes("404")) {
         errorMessage = "服务器API路径不正确，请检查服务器配置";
       } else if (err.message.includes("500")) {
         errorMessage = "服务器内部错误，请联系管理员";
       } else if (err.message.includes("403")) {
         errorMessage = "访问被拒绝，请检查权限设置";
+      } else if (err.message.includes("timeout")) {
+        errorMessage = "请求超时，已展示离线缓存数据";
       }
 
       set({ error: errorMessage });
@@ -292,7 +370,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
       }
 
       const cachedData = dataCache.get(cacheKey);
-      if (cachedData && isValidCache(cachedData)) {
+      if (cachedData && isValidMemoryCache(cachedData)) {
         set({
           contentData: cachedData.data,
           pageStart: cachedData.data.length,
@@ -304,7 +382,18 @@ const useHomeStore = create<HomeState>((set, get) => ({
         if (cachedData) {
           dataCache.delete(cacheKey);
         }
-        get().fetchInitialData();
+        // 先尝试从 SQLite 加载缓存作为初步显示
+        HomeCacheDb.get(cacheKey).then((dbCachedData) => {
+          if (dbCachedData && dbCachedData.data.length > 0) {
+            set({
+              contentData: dbCachedData.data,
+              pageStart: dbCachedData.data.length,
+              hasMore: dbCachedData.hasMore,
+            });
+          }
+        }).finally(() => {
+          get().fetchInitialData();
+        });
       }
     }
   },

@@ -338,23 +338,7 @@ export default function HomeScreen() {
             正在验证服务器配置...
           </ThemedText>
         </View>
-      ) : apiConfigStatus.error && !apiConfigStatus.isValid ? (
-        <View style={commonStyles.center}>
-          <ThemedText type="subtitle" style={{ padding: spacing, textAlign: "center" }}>
-            {apiConfigStatus.error}
-          </ThemedText>
-        </View>
-      ) : loading ? (
-        <View style={commonStyles.center}>
-          <ActivityIndicator size="large" />
-        </View>
-      ) : error ? (
-        <View style={commonStyles.center}>
-          <ThemedText type="subtitle" style={{ padding: spacing }}>
-            {error}
-          </ThemedText>
-        </View>
-      ) : (
+      ) : contentData.length > 0 ? (
         <Animated.View style={[dynamicStyles.contentContainer, { opacity: fadeAnim }]}>
           <CustomScrollView
             data={contentData}
@@ -368,6 +352,28 @@ export default function HomeScreen() {
             ListFooterComponent={renderFooter}
           />
         </Animated.View>
+      ) : apiConfigStatus.error && !apiConfigStatus.isValid ? (
+        <View style={commonStyles.center}>
+          <ThemedText type="subtitle" style={{ padding: spacing, textAlign: "center" }}>
+            {apiConfigStatus.error}
+          </ThemedText>
+        </View>
+      ) : error ? (
+        <View style={commonStyles.center}>
+          <ThemedText type="subtitle" style={{ padding: spacing }}>
+            {error}
+          </ThemedText>
+        </View>
+      ) : loading ? (
+        <View style={commonStyles.center}>
+          <ActivityIndicator size="large" />
+        </View>
+      ) : (
+        <View style={commonStyles.center}>
+          <ThemedText type="subtitle" style={{ padding: spacing }}>
+            {selectedCategory?.tags ? "请选择一个子分类" : "该分类下暂无内容"}
+          </ThemedText>
+        </View>
       )}
     </ThemedView>
   );

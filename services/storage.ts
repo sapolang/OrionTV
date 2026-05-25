@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api, PlayRecord as ApiPlayRecord, Favorite as ApiFavorite } from "./api";
 import { storageConfig } from "./storageConfig";
+import { FavoriteDb } from "./favoriteDb";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('Storage');
@@ -31,6 +32,8 @@ export interface PlayerSettings {
 
 export interface AppSettings {
   apiBaseUrl: string;
+  m3uUrl: string;
+  password: string;
   remoteInputEnabled: boolean;
   videoSource: {
     enabledAll: boolean;
@@ -38,7 +41,6 @@ export interface AppSettings {
       [key: string]: boolean;
     };
   };
-  m3uUrl: string;
 }
 
 export interface LoginCredentials {
@@ -98,7 +100,7 @@ export class PlayerSettingsManager {
   }
 }
 
-// --- FavoriteManager (Dynamic: API or LocalStorage) ---
+// --- FavoriteManager (Dynamic: API or SQLite) ---
 export class FavoriteManager {
   private static getStorageType() {
     return storageConfig.getStorageType();
@@ -106,13 +108,7 @@ export class FavoriteManager {
 
   static async getAll(): Promise<Record<string, Favorite>> {
     if (this.getStorageType() === "localstorage") {
-      try {
-        const data = await AsyncStorage.getItem(STORAGE_KEYS.FAVORITES);
-        return data ? JSON.parse(data) : {};
-      } catch (error) {
-        logger.info("Failed to get all local favorites:", error);
-        return {};
-      }
+      return await FavoriteDb.getAll();
     }
     return (await api.getFavorites()) as Record<string, Favorite>;
   }
@@ -120,9 +116,7 @@ export class FavoriteManager {
   static async save(source: string, id: string, item: Favorite): Promise<void> {
     const key = generateKey(source, id);
     if (this.getStorageType() === "localstorage") {
-      const allFavorites = await this.getAll();
-      allFavorites[key] = { ...item, save_time: Date.now() };
-      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
+      await FavoriteDb.save(key, item);
       return;
     }
     await api.addFavorite(key, item);
@@ -131,9 +125,7 @@ export class FavoriteManager {
   static async remove(source: string, id: string): Promise<void> {
     const key = generateKey(source, id);
     if (this.getStorageType() === "localstorage") {
-      const allFavorites = await this.getAll();
-      delete allFavorites[key];
-      await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
+      await FavoriteDb.remove(key);
       return;
     }
     await api.deleteFavorite(key);
@@ -142,8 +134,7 @@ export class FavoriteManager {
   static async isFavorited(source: string, id: string): Promise<boolean> {
     const key = generateKey(source, id);
     if (this.getStorageType() === "localstorage") {
-      const allFavorites = await this.getAll();
-      return !!allFavorites[key];
+      return await FavoriteDb.isFavorited(key);
     }
     const favorite = await api.getFavorites(key);
     return favorite !== null;
@@ -162,7 +153,7 @@ export class FavoriteManager {
 
   static async clearAll(): Promise<void> {
     if (this.getStorageType() === "localstorage") {
-      await AsyncStorage.removeItem(STORAGE_KEYS.FAVORITES);
+      await FavoriteDb.clearAll();
       return;
     }
     await api.deleteFavorite();
@@ -322,6 +313,7 @@ export class SettingsManager {
         sources: {},
       },
       m3uUrl: "",
+      password: "",
     };
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);

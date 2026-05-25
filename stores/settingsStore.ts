@@ -10,6 +10,7 @@ const logger = Logger.withTag('SettingsStore');
 interface SettingsState {
   apiBaseUrl: string;
   m3uUrl: string;
+  password: string;
   remoteInputEnabled: boolean;
   videoSource: {
     enabledAll: boolean;
@@ -24,6 +25,7 @@ interface SettingsState {
   fetchServerConfig: () => Promise<void>;
   setApiBaseUrl: (url: string) => void;
   setM3uUrl: (url: string) => void;
+  setPassword: (password: string) => void;
   setRemoteInputEnabled: (enabled: boolean) => void;
   saveSettings: () => Promise<void>;
   setVideoSource: (config: { enabledAll: boolean; sources: { [key: string]: boolean } }) => void;
@@ -34,7 +36,7 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   apiBaseUrl: "",
   m3uUrl: "",
-  liveStreamSources: [],
+  password: "",
   remoteInputEnabled: false,
   isModalVisible: false,
   serverConfig: null,
@@ -48,6 +50,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({
       apiBaseUrl: settings.apiBaseUrl,
       m3uUrl: settings.m3uUrl,
+      password: settings.password || "",
       remoteInputEnabled: settings.remoteInputEnabled || false,
       videoSource: settings.videoSource || {
         enabledAll: true,
@@ -76,10 +79,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   setApiBaseUrl: (url) => set({ apiBaseUrl: url }),
   setM3uUrl: (url) => set({ m3uUrl: url }),
+  setPassword: (password) => set({ password }),
   setRemoteInputEnabled: (enabled) => set({ remoteInputEnabled: enabled }),
   setVideoSource: (config) => set({ videoSource: config }),
   saveSettings: async () => {
-    const { apiBaseUrl, m3uUrl, remoteInputEnabled, videoSource } = get();
+    const { apiBaseUrl, m3uUrl, password, remoteInputEnabled, videoSource } = get();
     const currentSettings = await SettingsManager.get()
     const currentApiBaseUrl = currentSettings.apiBaseUrl;
     let processedApiBaseUrl = apiBaseUrl.trim();
@@ -104,6 +108,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     await SettingsManager.save({
       apiBaseUrl: processedApiBaseUrl,
       m3uUrl,
+      password,
       remoteInputEnabled,
       videoSource,
     });

@@ -7,7 +7,7 @@ import { ThemedView } from "@/components/ThemedView";
 import { StyledButton } from "@/components/StyledButton";
 import { useThemeColor } from "@/hooks/useThemeColor";
 import { useSettingsStore } from "@/stores/settingsStore";
-// import useAuthStore from "@/stores/authStore";
+import useAuthStore from "@/stores/authStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { APIConfigSection } from "@/components/settings/APIConfigSection";
 import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
@@ -81,6 +81,8 @@ export default function SettingsScreen() {
 
   const handleSave = async () => {
     setIsLoading(true);
+    const { checkLoginStatus } = useAuthStore.getState();
+    const { apiBaseUrl } = useSettingsStore.getState();
     try {
       await saveSettings();
       setHasChanges(false);
@@ -88,6 +90,8 @@ export default function SettingsScreen() {
         type: "success",
         text1: "保存成功",
       });
+      // Trigger login check after save
+      await checkLoginStatus(apiBaseUrl);
     } catch {
       Alert.alert("错误", "保存设置失败");
     } finally {

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "@/services/api";
 import { useSettingsStore } from "./settingsStore";
+import { LoginCredentialsManager } from "@/services/storage";
 import Toast from "react-native-toast-message";
 import Logger from "@/utils/Logger";
 
@@ -50,8 +51,10 @@ const useAuthStore = create<AuthState>((set) => ({
       }
 
       if (!serverConfig?.StorageType) {
-        // Only show error if we're not loading and have tried to fetch the config
-        if (!settingsState.isLoadingServerConfig) {
+        // Server config not available - this is expected during network errors
+        // Don't show toast here, let loadMoreData handle the error and show cached data if available
+        // Only show toast if we're not loading and there's truly no server configured
+        if (!settingsState.isLoadingServerConfig && !apiBaseUrl) {
           Toast.show({ type: "error", text1: "请检查网络或者服务器地址是否可用" });
         }
         return;
@@ -60,14 +63,31 @@ const useAuthStore = create<AuthState>((set) => ({
       const authToken = await AsyncStorage.getItem('authCookies');
       if (!authToken) {
         if (serverConfig && serverConfig.StorageType === "localstorage") {
-          const loginResult = await api.login().catch(() => {
+          // Use password from settingsStore if available
+          const password = settingsState.password;
+          const loginResult = await api.login(undefined, password).catch(() => {
             set({ isLoggedIn: false, isLoginModalVisible: true });
           });
           if (loginResult && loginResult.ok) {
             set({ isLoggedIn: true });
+            // Save credentials
+            await LoginCredentialsManager.save({ username: "", password });
           }
         } else {
-          set({ isLoggedIn: false, isLoginModalVisible: true });
+          // For non-localstorage servers, need username and password
+          const { password } = settingsState;
+          if (password) {
+            // If password is set in settings, try to login with it
+            const loginResult = await api.login("", password).catch(() => {
+              set({ isLoggedIn: false, isLoginModalVisible: true });
+            });
+            if (loginResult && loginResult.ok) {
+              set({ isLoggedIn: true });
+              await LoginCredentialsManager.save({ username: "", password });
+            }
+          } else {
+            set({ isLoggedIn: false, isLoginModalVisible: true });
+          }
         }
       } else {
         set({ isLoggedIn: true, isLoginModalVisible: false });

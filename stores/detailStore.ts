@@ -3,9 +3,15 @@ import { SearchResult, api } from "@/services/api";
 import { getResolutionFromM3U8 } from "@/services/m3u8";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FavoriteManager } from "@/services/storage";
+import { DetailCacheDb } from "@/services/detailCacheDb";
 import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag('DetailStore');
+
+// 生成详情缓存的 key
+const getDetailCacheKey = (q: string, preferredSource?: string) => {
+  return preferredSource ? `${q}_${preferredSource}` : q;
+};
 
 export type SearchResultWithResolution = SearchResult & { resolution?: string | null };
 
@@ -43,6 +49,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
 
   init: async (q, preferredSource, id) => {
     const perfStart = performance.now();
+    const cacheKey = getDetailCacheKey(q, preferredSource);
     logger.info(`[PERF] DetailStore.init START - q: ${q}, preferredSource: ${preferredSource}, id: ${id}`);
     
     const { controller: oldController } = get();
@@ -52,15 +59,35 @@ const useDetailStore = create<DetailState>((set, get) => ({
     const newController = new AbortController();
     const signal = newController.signal;
 
-    set({
-      q,
-      loading: true,
-      searchResults: [],
-      detail: null,
-      error: null,
-      allSourcesLoaded: false,
-      controller: newController,
-    });
+    // 先尝试从 SQLite 加载缓存作为初步显示
+    const cachedData = await DetailCacheDb.get(cacheKey);
+    if (cachedData && cachedData.results.length > 0) {
+      logger.info(`[CACHE] Found SQLite cache with ${cachedData.results.length} results`);
+      set({
+        q,
+        loading: true,
+        searchResults: cachedData.results as SearchResultWithResolution[],
+        sources: cachedData.results.map((r) => ({
+          source: r.source,
+          source_name: r.source_name,
+          resolution: undefined,
+        })),
+        detail: cachedData.results[0] as SearchResultWithResolution,
+        error: null,
+        allSourcesLoaded: false,
+        controller: newController,
+      });
+    } else {
+      set({
+        q,
+        loading: true,
+        searchResults: [],
+        detail: null,
+        error: null,
+        allSourcesLoaded: false,
+        controller: newController,
+      });
+    }
 
     const { videoSource } = useSettingsStore.getState();
 
@@ -96,6 +123,9 @@ const useDetailStore = create<DetailState>((set, get) => ({
         const existingSources = new Set(state.searchResults.map((r) => r.source));
         const newResults = resultsWithResolution.filter((r) => !existingSources.has(r.source));
         const finalResults = merge ? [...state.searchResults, ...newResults] : resultsWithResolution;
+
+        // 保存到 SQLite 缓存
+        DetailCacheDb.save(cacheKey, finalResults);
 
         return {
           searchResults: finalResults,
@@ -169,8 +199,40 @@ const useDetailStore = create<DetailState>((set, get) => ({
             }
           } catch (fallbackError) {
             logger.error(`[ERROR] FALLBACK search FAILED:`, fallbackError);
+            const errorMessage = fallbackError instanceof Error ? fallbackError.message : '网络错误，请稍后重试';
+            
+            // 检查是否是网络错误
+            const isNetworkError = 
+              errorMessage.includes("Network") ||
+              errorMessage.includes("network") ||
+              errorMessage.includes("timeout") ||
+              errorMessage.includes("fetch") ||
+              errorMessage.includes("Failed to fetch") ||
+              errorMessage.includes("Network request failed");
+            
+            // 网络错误时检查是否有缓存数据
+            if (isNetworkError) {
+              const cachedData = await DetailCacheDb.get(cacheKey);
+              if (cachedData && cachedData.results.length > 0) {
+                logger.info(`[CACHE] Using SQLite cache after fallback network error`);
+                set({
+                  searchResults: cachedData.results as SearchResultWithResolution[],
+                  sources: cachedData.results.map((r) => ({
+                    source: r.source,
+                    source_name: r.source_name,
+                    resolution: undefined,
+                  })),
+                  detail: cachedData.results[0] as SearchResultWithResolution,
+                  error: null,
+                  loading: false,
+                  allSourcesLoaded: true,
+                });
+                return;
+              }
+            }
+            
             set({ 
-              error: `搜索失败：${fallbackError instanceof Error ? fallbackError.message : '网络错误，请稍后重试'}`,
+              error: `搜索失败：${errorMessage}`,
               loading: false 
             });
           }
@@ -259,8 +321,40 @@ const useDetailStore = create<DetailState>((set, get) => ({
           }
         } catch (resourceError) {
           logger.error(`[ERROR] Failed to get resources:`, resourceError);
+          const errorMessage = resourceError instanceof Error ? resourceError.message : '网络错误，请稍后重试';
+          
+          // 检查是否是网络错误
+          const isNetworkError = 
+            errorMessage.includes("Network") ||
+            errorMessage.includes("network") ||
+            errorMessage.includes("timeout") ||
+            errorMessage.includes("fetch") ||
+            errorMessage.includes("Failed to fetch") ||
+            errorMessage.includes("Network request failed");
+          
+          // 网络错误时检查是否有缓存数据
+          if (isNetworkError) {
+            const cachedData = await DetailCacheDb.get(cacheKey);
+            if (cachedData && cachedData.results.length > 0) {
+              logger.info(`[CACHE] Using SQLite cache after network error (getResources)`);
+              set({
+                searchResults: cachedData.results as SearchResultWithResolution[],
+                sources: cachedData.results.map((r) => ({
+                  source: r.source,
+                  source_name: r.source_name,
+                  resolution: undefined,
+                })),
+                detail: cachedData.results[0] as SearchResultWithResolution,
+                error: null,
+                loading: false,
+                allSourcesLoaded: true,
+              });
+              return;
+            }
+          }
+          
           set({ 
-            error: `获取视频源失败：${resourceError instanceof Error ? resourceError.message : '网络错误，请稍后重试'}`,
+            error: `获取视频源失败：${errorMessage}`,
             loading: false 
           });
           return;
@@ -299,6 +393,37 @@ const useDetailStore = create<DetailState>((set, get) => ({
       if ((e as Error).name !== "AbortError") {
         logger.error(`[ERROR] DetailStore.init caught unexpected error:`, e);
         const errorMessage = e instanceof Error ? e.message : "获取数据失败";
+        
+        // 检查是否是网络错误
+        const isNetworkError = 
+          errorMessage.includes("Network") ||
+          errorMessage.includes("network") ||
+          errorMessage.includes("timeout") ||
+          errorMessage.includes("fetch") ||
+          errorMessage.includes("Failed to fetch") ||
+          errorMessage.includes("Network request failed");
+        
+        // 网络错误时检查是否有缓存数据
+        if (isNetworkError) {
+          const cachedData = await DetailCacheDb.get(cacheKey);
+          if (cachedData && cachedData.results.length > 0) {
+            logger.info(`[CACHE] Using SQLite cache after network error`);
+            set({
+              searchResults: cachedData.results as SearchResultWithResolution[],
+              sources: cachedData.results.map((r) => ({
+                source: r.source,
+                source_name: r.source_name,
+                resolution: undefined,
+              })),
+              detail: cachedData.results[0] as SearchResultWithResolution,
+              error: null,
+              loading: false,
+              allSourcesLoaded: true,
+            });
+            return;
+          }
+        }
+        
         set({ error: `搜索失败：${errorMessage}` });
       } else {
         logger.info(`[INFO] DetailStore.init aborted by user`);
