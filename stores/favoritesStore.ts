@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { Favorite, FavoriteManager } from "@/services/storage";
 import { api } from "@/services/api";
+import { FavoriteDb } from "@/services/favoriteDb";
+import NetInfo from '@react-native-community/netinfo';
 
 export interface FavoriteWithSource extends Favorite {
   key: string;
@@ -14,54 +16,106 @@ interface FavoritesState {
   fetchFavorites: () => Promise<void>;
 }
 
-const useFavoritesStore = create<FavoritesState>((set) => ({
+// 检查网络连接状态
+const isNetworkAvailable = async (): Promise<boolean> => {
+  try {
+    const netState = await NetInfo.fetch();
+    return netState.isConnected ?? false;
+  } catch {
+    return false;
+  }
+};
+
+// 超时包装函数
+const withTimeout = <T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> => {
+  const timeout = new Promise<T>((_, reject) => {
+    setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]);
+};
+
+const useFavoritesStore = create<FavoritesState>((set, get) => ({
   favorites: [],
   loading: false,
   error: null,
   fetchFavorites: async () => {
     set({ loading: true, error: null });
+    
+    // 第一步：优先获取并展示本地数据
+    let localData: Record<string, Favorite> = {};
     try {
-      // 首先从本地 SQLite 获取
-      const localData: Record<string, Favorite> = {};
-      try {
-        const localFavorites = await FavoriteManager.getAll();
-        Object.assign(localData, localFavorites);
-      } catch (localError) {
-        console.log("本地获取收藏失败:", localError);
+      const localFavorites = await withTimeout(FavoriteDb.getAll(), 5000, "本地数据库操作超时");
+      localData = localFavorites;
+      
+      // 立即展示本地数据
+      const localArray = Object.entries(localData).map(([key, item]) => ({
+        ...item,
+        key,
+        isLocal: true,
+      }));
+      set({ favorites: localArray, loading: false });
+    } catch (localError) {
+      console.log("本地获取收藏失败:", localError);
+      set({ loading: false });
+    }
+
+    // 第二步：在后台获取服务器数据（不阻塞 UI）
+    if (!api.baseURL) {
+      return; // 没有配置服务器地址，直接返回
+    }
+
+    try {
+      const networkAvailable = await isNetworkAvailable();
+      if (!networkAvailable) {
+        console.log("网络不可用，跳过服务器请求");
+        return;
       }
 
-      // 再从服务器获取
-      const serverData: Record<string, Favorite> = {};
-      try {
-        const serverFavorites = await api.getFavorites();
-        if (serverFavorites && typeof serverFavorites === 'object') {
-          Object.assign(serverData, serverFavorites as Record<string, Favorite>);
-        }
-      } catch (serverError) {
-        console.log("服务器获取收藏失败:", serverError);
+      // 根据地址类型设置超时时间
+      const isLocalNetwork = api.baseURL.includes('192.168.') || 
+                            api.baseURL.includes('10.') || 
+                            api.baseURL.includes('172.16.') ||
+                            api.baseURL.includes('localhost') ||
+                            api.baseURL.includes('127.0.0.1');
+      const timeoutMs = isLocalNetwork ? 3000 : 10000;
+
+      const serverFavorites = await withTimeout(api.getFavorites(), timeoutMs, isLocalNetwork ? "局域网服务器请求超时" : "服务器请求超时");
+      
+      if (!serverFavorites || typeof serverFavorites !== 'object') {
+        return;
       }
 
-      // 合并数据，标记来源
-      const allKeys = new Set([...Object.keys(localData), ...Object.keys(serverData)]);
-      const favoritesArray: FavoriteWithSource[] = [];
+      const serverData = serverFavorites as Record<string, Favorite>;
 
+      // 将服务器数据保存到本地 SQLite（默认不过期）
+      for (const [key, item] of Object.entries(serverData)) {
+        const { save_time, ...saveItem } = item;
+        await FavoriteDb.save(key, saveItem);
+      }
+
+      // 合并数据并更新显示（服务器数据优先）
+      const currentFavorites = get().favorites;
+      const currentKeys = new Set(currentFavorites.map(f => f.key));
+      const serverKeys = new Set(Object.keys(serverData));
+      const allKeys = new Set([...currentKeys, ...serverKeys]);
+
+      const mergedArray: FavoriteWithSource[] = [];
       for (const key of allKeys) {
-        const localItem = localData[key];
         const serverItem = serverData[key];
-
         if (serverItem) {
-          // 服务器存在：标记为非本地（即使本地也有，服务器优先）
-          favoritesArray.push({ ...serverItem, key, isLocal: false });
-        } else if (localItem) {
-          // 只有本地有
-          favoritesArray.push({ ...localItem, key, isLocal: true });
+          mergedArray.push({ ...serverItem, key, isLocal: false });
+        } else {
+          const localItem = currentFavorites.find(f => f.key === key);
+          if (localItem) {
+            mergedArray.push(localItem);
+          }
         }
       }
 
-      set({ favorites: favoritesArray, loading: false });
-    } catch (e) {
-      const error = e instanceof Error ? e.message : "获取收藏列表失败";
-      set({ error, loading: false });
+      set({ favorites: mergedArray });
+    } catch (serverError) {
+      console.log("服务器获取收藏失败（后台）:", serverError);
+      // 服务器请求失败不影响本地数据显示
     }
   },
 }));
